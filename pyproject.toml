@@ -1,0 +1,20 @@
+# Used by `flet build` to package the GUI into native installers
+# (.exe / .dmg / .AppImage). The CLI and Docker paths don't need this.
+[project]
+name = "doesthedogwatchplex_gui"
+version = "1.0.0"
+description = "DoesTheDogWatchPlex GUI — DoesTheDogDie content warnings for your Plex library"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "flet>=0.85,<0.90",
+    "plexapi>=4.15.0",
+    "requests>=2.31.0",
+    "deep-translator>=1.11.0",
+]
+
+[tool.flet]
+org = "party.ourserver"
+product = "DoesTheDogWatchPlex GUI"
+company = "DoesTheDogWatchPlex"
+copyright = "MIT — community fork"

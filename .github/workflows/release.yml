@@ -1,0 +1,91 @@
+name: release-binaries
+
+# Builds standalone installers (.exe / .dmg / .AppImage) with `flet build` on a
+# 3-OS matrix and attaches them to the GitHub Release for the tag.
+# Gated so it does NOT run on the Forgejo mirror (which only has a Linux runner).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: github.server_url == 'https://github.com'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, target: windows }
+          - { os: macos-latest,   target: macos   }
+          - { os: ubuntu-latest,  target: linux    }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Linux build deps
+        if: matrix.target == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libgtk-3-dev
+
+      - name: Install Flet
+        run: pip install "flet>=0.85,<0.90"
+
+      - name: flet build
+        run: flet build ${{ matrix.target }} -v
+
+      # ---------- package per platform ----------
+      - name: Package Windows (.zip with the .exe)
+        if: matrix.target == 'windows'
+        shell: bash
+        run: 7z a "DoesTheDogWatchPlex-GUI-Windows.zip" ./build/windows/*
+
+      - name: Package macOS (.dmg)
+        if: matrix.target == 'macos'
+        run: hdiutil create -volname "DoesTheDogWatchPlex GUI" -srcfolder build/macos -ov -format UDZO "DoesTheDogWatchPlex-GUI-macOS.dmg"
+
+      - name: Package Linux (.AppImage)
+        if: matrix.target == 'linux'
+        run: |
+          set -euo pipefail
+          APP=DoesTheDogWatchPlex-GUI
+          mkdir -p AppDir
+          cp -r build/linux/* AppDir/
+          BIN=$(find AppDir -maxdepth 2 -type f -executable ! -name "*.so*" | head -1)
+          echo "discovered binary: $BIN"
+          RELBIN=${BIN#AppDir/}
+          cat > AppDir/AppRun <<EOF
+          #!/bin/bash
+          HERE="\$(dirname "\$(readlink -f "\$0")")"
+          exec "\$HERE/${RELBIN}" "\$@"
+          EOF
+          chmod +x AppDir/AppRun
+          cat > AppDir/${APP}.desktop <<EOF
+          [Desktop Entry]
+          Name=DoesTheDogWatchPlex GUI
+          Exec=AppRun
+          Icon=${APP}
+          Type=Application
+          Categories=Utility;
+          EOF
+          touch AppDir/${APP}.png
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
+          chmod +x appimagetool
+          ./appimagetool --appimage-extract-and-run AppDir "${APP}-Linux.AppImage"
+
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.zip
+            *.dmg
+            *.AppImage
