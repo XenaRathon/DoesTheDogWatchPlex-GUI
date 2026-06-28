@@ -18,3 +18,6 @@ __pycache__/
 # Local backup copies
 *(backup)*
 *.bak
+
+# GUI-managed settings (may hold tokens)
+settings.json

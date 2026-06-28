@@ -40,6 +40,34 @@ The show is matched **once** (by IMDB id, then title+year against `TV Show` resu
 
 Episode level makes one API call per episode, so it's the slowest option across a large library — start with `series` + `season` and add `episode` once you're happy with the output.
 
+## The App (GUI)
+
+If you'd rather not touch a config file or the command line, there's a friendly app — a clickable window with a setup screen that walks you through pasting your Plex and DoesTheDogDie keys, a searchable picker for the ~200 content topics, live preview of how the warning will look, and buttons for **Dry-run**, **Run**, and **Clear**.
+
+```bash
+pip install -r requirements-gui.txt
+
+python gui.py          # opens as a desktop window (no port to manage)
+python gui.py --web    # serves a web app instead — for Docker / stack use
+```
+
+The same window runs as a **desktop app** locally and as a **web app** for a server stack (set `DTDD_GUI_PORT`, default `8550`). It saves your choices to `settings.json`, which the engine and CLI also read — so the GUI, command line, and Docker stay in sync.
+
+**Run the web GUI in Docker** (`Dockerfile.gui`):
+
+```bash
+docker build -f Dockerfile.gui -t dtdd-gui .
+docker run -d -p 8550:8550 -v dtdd-data:/data \
+  -e PLEX_URL=http://YOUR_PLEX_IP:32400 -e PLEX_TOKEN=xxx -e DTDD_API_KEY=xxx \
+  dtdd-gui
+```
+
+`DTDD_DATA_DIR=/data` holds `settings.json` + the API cache (mount a volume to persist them). Env vars seed the connection on first boot; everything else is set in the UI. Put it behind a reverse proxy / SSO if you expose it — it holds your Plex token and writes to Plex.
+
+> Handy for TV: set a **single show** in the action bar to add episode-level warnings one series at a time, instead of hammering the API across your whole library at once.
+
+The aesthetic is a deliberately loud retrofuturist / vaporwave / cyberpunk theme — broadly themed, not tied to any one server.
+
 ## Setup
 
 ### Docker (recommended)
@@ -220,7 +248,9 @@ If both are set, `INCLUDE_TOPICS` takes priority and `EXCLUDE_TOPICS` is ignored
 
 ## Roadmap
 
-- **Web UI for settings & topic selection** — a simple interface to edit `config.py` (thresholds, libraries, language) and tick which topics to include/exclude, instead of hand-editing Python. Picking from the ~200 DTDD topics is the main pain point today.
+- ✅ **GUI for settings & topic selection** — desktop window + web app (`gui.py`); see [The App](#the-app-gui).
+- **Packaged installers** — pre-built `.exe` / `.dmg` / `.AppImage` via `flet build`, so non-technical users can just download and double-click (no Python).
+- **One-click web service** — a `docker-compose` service for the web GUI behind the stack.
 - **Smarter episode/season attribution** — mitigate DTDD's tendency to dump series-wide votes onto Season 1 / S1E1 (see the accuracy note above), e.g. by cross-referencing later episodes to spot topics that are uniform across an entire show.
 - **Per-library configuration** — different thresholds or topic filters per Plex library.
 

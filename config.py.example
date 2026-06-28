@@ -37,9 +37,38 @@ TV_WARNING_LEVELS = ["series", "season", "episode"]
 # Get your API key: sign up at doesthedogdie.com, then visit /profile
 DTDD_API_KEY = "your-dtdd-api-key-here"
 
-# --- Behavior ---
-# Separator line between original summary and content warnings
+# --- Appearance (how the warning block looks in Plex) ---
+# Most people set these in the GUI instead, but you can hand-edit them here too.
+
+# How warnings are arranged: "inline" (all on one line), "lines" (one per line),
+# or "categorized" (grouped under their DoesTheDogDie category, e.g. Animal Death).
+WARNING_LAYOUT = "inline"
+
+# In the "categorized" layout, prefix each category with an emoji (🐾, 🔪, …).
+USE_CATEGORY_ICONS = True
+
+# Append the first scene time to each warning, e.g. "a dog dies (0:14:38)".
+# Requires a DoesTheDogDie subscription + a title with submitted timecodes;
+# does nothing otherwise.
+SHOW_TIMESTAMPS = True
+
+# Show the skip-to range instead of just the time: "a dog dies (0:14:38 → 0:16:21)"
+# — when to look away and when it's safe again.
+SHOW_CUES = False
+
+# Header/divider inserted before the warnings (leading blank lines add spacing).
 SEPARATOR = "\n\n———— Content Warnings (via DoesTheDogDie.com) ————"
+
+# Text/emoji in front of the list of things that DO happen.
+WARN_PREFIX = "⚠️  "
+
+# Text/emoji in front of the ✅ "safe" list (only used if SHOW_SAFE_TOPICS = True).
+SAFE_PREFIX = "✅  "
+
+# How topics are joined within a line.
+TOPIC_DELIMITER = " · "
+
+# --- Behavior ---
 
 # Minimum yes votes for a warning to be included (filters out low-confidence entries)
 MIN_YES_VOTES = 5

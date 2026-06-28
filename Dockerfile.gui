@@ -1,0 +1,24 @@
+# Web GUI image (Flet, served in a browser) — for stack/Docker deployment.
+# The CLI image is the separate ./Dockerfile.
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# System deps Flet's web server needs at runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt requirements-gui.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-gui.txt
+
+COPY dtdd.py plex_warnings.py translate.py settings.py gui.py ./
+
+# settings.json + .cache persist here (mount a volume)
+ENV DTDD_DATA_DIR=/data \
+    DTDD_GUI_WEB=1 \
+    DTDD_GUI_PORT=8550
+VOLUME ["/data"]
+EXPOSE 8550
+
+CMD ["python", "gui.py", "--web"]

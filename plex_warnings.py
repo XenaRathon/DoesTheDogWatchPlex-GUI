@@ -25,13 +25,7 @@ import time
 from plexapi.server import PlexServer
 
 from dtdd import DTDDClient
-
-try:
-    import config
-except ImportError:
-    print("ERROR: config.py not found.")
-    print("Copy config.py.example to config.py and fill in your details.")
-    sys.exit(1)
+import settings
 
 # Maps PLEX_LIBRARY_TYPES strings to Plex internal section type names
 _LIBRARY_TYPE_MAP = {
@@ -42,9 +36,28 @@ _LIBRARY_TYPE_MAP = {
 # Default TV levels if not configured
 _DEFAULT_TV_LEVELS = ["series", "season", "episode"]
 
+# Emoji per DoesTheDogDie topic category, used by the "categorized" warning layout.
+# Anything not listed falls back to FALLBACK_CATEGORY_ICON.
+FALLBACK_CATEGORY_ICON = "⚠️"
+CATEGORY_ICONS = {
+    "Abandonment": "🚪", "Abuse": "💢", "Addiction": "🍷",
+    "Animal Death": "🐾", "Animal Distress": "🐾", "Animal Phobia": "🕷️",
+    "Appendages": "✋", "Assault": "👊", "Children": "🧒",
+    "Creepy Crawly": "🐛", "Death": "💀", "Disability": "♿",
+    "Drugs/Alcohol": "💊", "Family": "👪", "Fear": "😱", "Gross": "🤢",
+    "Head": "🧠", "LGBTQ+": "🏳️‍🌈", "Large-scale Violence": "💥",
+    "Law Enforcement": "🚓", "Loss": "💔", "Medical": "🏥",
+    "Mental Health": "🫥", "Natural Disasters": "🌪️", "Neck": "🩸",
+    "Noxious": "⚡", "Paranoia": "👁️", "Pregnancy": "🤰",
+    "Prejudice": "✊", "Race": "✊", "Relationships": "💔",
+    "Religious": "✝️", "Self Harm": "🩸", "Sex": "❤️‍🔥", "Sexism": "♀️",
+    "Sexual Assault": "🚫", "Sickness": "🤒", "Social": "👥", "Spoiler": "🔒",
+    "Vehicular": "🚗", "Violence": "🔪", "Whole Body": "🩹",
+}
+
 
 def get_separator() -> str:
-    return getattr(config, "SEPARATOR", "\n\n———— Content Warnings (via DoesTheDogDie.com) ————")
+    return settings.get("SEPARATOR")
 
 
 def strip_warnings(summary: str) -> str:
@@ -74,82 +87,194 @@ def media_id(media_data: dict | None) -> int | None:
     return media_data.get("id")
 
 
-def format_warnings(media_data: dict) -> str | None:
-    """Extract and format trigger warnings from DTDD media response.
-
-    Returns a formatted string of warnings, or None if no relevant warnings found.
+def _evaluate_warnings(media_data: dict) -> tuple[list[dict], list[dict]]:
+    """Apply thresholds + topic filters. Returns (yes, no) lists of dicts:
+    {name, category, stat} — `name` is the warning's display name (notName for the
+    'safe' list), `stat` is the raw topicItemStat (for context comments).
     """
     stats = media_data.get("topicItemStats", [])
     if not stats:
-        return None
+        return [], []
 
-    min_yes = getattr(config, "MIN_YES_VOTES", 3)
-    min_ratio = getattr(config, "MIN_YES_RATIO", 0.6)
+    min_yes = settings.get("MIN_YES_VOTES")
+    min_ratio = settings.get("MIN_YES_RATIO")
+    show_nos = settings.get("SHOW_SAFE_TOPICS")
+    include_topics = settings.get("INCLUDE_TOPICS")
+    exclude_topics = settings.get("EXCLUDE_TOPICS")
+    inc = [t.lower() for t in include_topics] if include_topics else None
+    exc = [t.lower() for t in exclude_topics] if exclude_topics else None
 
-    show_nos = getattr(config, "SHOW_SAFE_TOPICS", False)
-    include_topics = getattr(config, "INCLUDE_TOPICS", None)
-    exclude_topics = getattr(config, "EXCLUDE_TOPICS", None)
-
-    warnings_yes = []
-    warnings_no = []
-
+    yes, no = [], []
     for stat in stats:
         yes_count = stat.get("yesSum", 0)
         no_count = stat.get("noSum", 0)
         total = yes_count + no_count
         topic = stat.get("topic", {})
         topic_name = topic.get("name", "")
-        topic_not_name = topic.get("notName", "")
+        category = (topic.get("TopicCategory") or {}).get("name") or "Other"
 
         if total == 0 or not topic_name:
             continue
-
-        # Apply topic filtering
-        if include_topics is not None:
-            if topic_name.lower() not in [t.lower() for t in include_topics]:
+        if inc is not None:
+            if topic_name.lower() not in inc:
                 continue
-        elif exclude_topics is not None:
-            if topic_name.lower() in [t.lower() for t in exclude_topics]:
+        elif exc is not None:
+            if topic_name.lower() in exc:
                 continue
 
         ratio = yes_count / total
-
         if ratio >= min_ratio and yes_count >= min_yes:
-            warnings_yes.append((topic_name, yes_count, no_count))
+            yes.append({"name": topic_name, "category": category, "stat": stat})
         elif show_nos and (1 - ratio) >= min_ratio and no_count >= min_yes:
-            warnings_no.append((topic_not_name, yes_count, no_count))
+            no.append({"name": topic.get("notName", ""), "category": category, "stat": stat})
+    return yes, no
 
+
+def timeline_map(entries: list[dict]) -> dict[str, list[dict]]:
+    """Index timeline entries by lowercased topic name -> [entries] (in order)."""
+    out: dict[str, list[dict]] = {}
+    for e in entries or []:
+        key = (e.get("topic") or "").strip().lower().rstrip(".")
+        if key:
+            out.setdefault(key, []).append(e)
+    return out
+
+
+def build_item_timeline(dtdd: DTDDClient, media_data: dict) -> dict[str, list[dict]]:
+    """Fetch + index the timeline for a media payload, if it has timecodes and
+    timestamps/cues are enabled. Returns {} when there's nothing to fetch."""
+    if not (settings.get("SHOW_TIMESTAMPS") or settings.get("SHOW_CUES")):
+        return {}
+    if not media_data.get("itemTimecodeCount"):
+        return {}
+    mid = media_id(media_data)
+    if not mid:
+        return {}
+    try:
+        return timeline_map(dtdd.get_timeline(mid))
+    except Exception:
+        return {}
+
+
+def _time_suffix(entries: list[dict] | None) -> str:
+    """' (start)' or ' (start → end)' for a topic's first timeline entry."""
+    if not entries:
+        return ""
+    e = entries[0]
+    start, end = e.get("start"), e.get("end")
+    if settings.get("SHOW_CUES") and start and end:
+        return f" ({start} → {end})"
+    if settings.get("SHOW_TIMESTAMPS") and start:
+        return f" ({start})"
+    if settings.get("SHOW_CUES") and start:
+        return f" ({start})"
+    return ""
+
+
+def format_warnings(media_data: dict, timeline: dict | None = None,
+                    descriptions: dict | None = None) -> str | None:
+    """Extract and format trigger warnings from DTDD media response.
+
+    timeline:     {topic_lower: [timeline entries]} — adds timestamps/cues per setting.
+    descriptions: {topic_lower: [detail lines]} — selected scene/community description
+                  lines (review screen). Placed right under their topic so that, in the
+                  categorized layout, a topic's descriptions sit under its category.
+    Returns a formatted string of warnings, or None if no relevant warnings found.
+    """
+    warnings_yes, warnings_no = _evaluate_warnings(media_data)
     if not warnings_yes and not warnings_no:
         return None
 
     # Translate topic names if LANGUAGE is configured
-    target_lang = getattr(config, "LANGUAGE", None)
+    target_lang = settings.get("LANGUAGE")
     if target_lang:
         from translate import translate_topics
-        all_names = [w[0] for w in warnings_yes] + [w[0] for w in warnings_no]
-        translations = translate_topics(all_names, target_lang)
+        all_names = [w["name"] for w in warnings_yes] + [w["name"] for w in warnings_no]
+        trans = translate_topics(all_names, target_lang)
     else:
-        translations = None
+        trans = None
 
-    lines = []
-    if warnings_yes:
-        names = [translations[w[0]] if translations else w[0] for w in warnings_yes]
-        lines.append("⚠️  " + " · ".join(names))
-    if warnings_no:
-        names = [translations[w[0]] if translations else w[0] for w in warnings_no]
-        lines.append("✅  " + " · ".join(names))
+    def label_of(w):
+        """Translated name + timestamp/cue suffix (from the timeline, if any)."""
+        name = trans[w["name"]] if trans else w["name"]
+        if timeline:
+            name += _time_suffix(timeline.get(w["name"].lower()))
+        return name
 
+    descriptions = descriptions or {}
+
+    def desc_lines(w):
+        return descriptions.get(w["name"].lower(), [])
+
+    layout = settings.get("WARNING_LAYOUT")
+    use_icons = settings.get("USE_CATEGORY_ICONS")
+    warn_prefix = settings.get("WARN_PREFIX")
+    safe_prefix = settings.get("SAFE_PREFIX")
+    delimiter = settings.get("TOPIC_DELIMITER")
+
+    def render(items, prefix):
+        """items: list of {name, category}. Render per the configured layout,
+        placing each topic's selected descriptions right under it."""
+        if not items:
+            return []
+        out = []
+        if layout == "lines":
+            for w in items:
+                out.append(f"{prefix}{label_of(w)}")
+                out.extend(desc_lines(w))
+        elif layout == "categorized":
+            groups: dict[str, list] = {}
+            for w in items:
+                groups.setdefault(w["category"], []).append(w)
+            for cat in sorted(groups):
+                icon = (CATEGORY_ICONS.get(cat, FALLBACK_CATEGORY_ICON) + " ") if use_icons else ""
+                out.append(f"{icon}{cat}: " + delimiter.join(label_of(w) for w in groups[cat]))
+                for w in groups[cat]:        # descriptions sit under their category
+                    out.extend(desc_lines(w))
+        else:  # inline (default) — descriptions follow the single line
+            out.append(prefix + delimiter.join(label_of(w) for w in items))
+            for w in items:
+                out.extend(desc_lines(w))
+        return out
+
+    lines = render(warnings_yes, warn_prefix) + render(warnings_no, safe_prefix)
     return "\n".join(lines)
 
 
+def extract_contexts(media_data: dict, index1=None, index2=None) -> list[dict]:
+    """For each passing warning topic, return its top community comment as context.
+
+    Returns [{topic, category, comment, votes}], best comment first. If index1/2 are
+    given (season/episode), prefer comments tagged to that episode.
+    """
+    yes, _ = _evaluate_warnings(media_data)
+    out = []
+    for w in yes:
+        comments = w["stat"].get("comments") or []
+        if index1 is not None:
+            scoped = [c for c in comments
+                      if c.get("index1") == index1 and (index2 is None or c.get("index2") == index2)]
+            comments = scoped or comments
+        comments = [c for c in comments if (c.get("comment") or "").strip()]
+        if not comments:
+            continue
+        top = max(comments, key=lambda c: c.get("voteSum", 0))
+        out.append({"topic": w["name"], "category": w["category"],
+                    "comment": top["comment"].strip(), "votes": top.get("voteSum", 0)})
+    out.sort(key=lambda c: -c["votes"])
+    return out
+
+
 def apply_warnings(item, media_data: dict | None, label: str, dry_run: bool = False,
-                   indent: str = "  ") -> bool:
+                   indent: str = "  ", timeline: dict | None = None,
+                   descriptions: dict | None = None) -> bool:
     """Format warnings from media_data and write them to item.summary.
 
     Strips any existing DTDD block first (idempotent). Returns True if warnings
     were added (or would be, in dry-run).
     """
-    warning_text = format_warnings(media_data) if media_data else None
+    warning_text = (format_warnings(media_data, timeline=timeline, descriptions=descriptions)
+                    if media_data else None)
     if not warning_text:
         print(f"{indent}– {label} — no significant warnings")
         return False
@@ -234,7 +359,8 @@ def process_movie(dtdd: DTDDClient, movie, dry_run: bool = False) -> bool:
         print(f"  – {title} — not found on DTDD")
         return False
 
-    return apply_warnings(movie, media_data, title, dry_run=dry_run, indent="  ")
+    timeline = build_item_timeline(dtdd, media_data)
+    return apply_warnings(movie, media_data, title, dry_run=dry_run, indent="  ", timeline=timeline)
 
 
 def match_show(dtdd: DTDDClient, show) -> dict | None:
@@ -268,66 +394,38 @@ def match_show(dtdd: DTDDClient, show) -> dict | None:
     return None
 
 
-def process_show(dtdd: DTDDClient, show, dry_run: bool = False,
-                 levels: list[str] | None = None) -> tuple[int, int]:
-    """Process a TV show at the configured levels (series / season / episode).
+def iter_show_media(dtdd: DTDDClient, show, levels: list[str] | None = None):
+    """Yield (plex_item, label, media_data, index1, index2) for each level of a show.
 
-    Fetches the series once to resolve the DTDD id, then makes one indexed
-    /media lookup per season and per episode (all cached locally). DTDD computes
-    these per-index aggregates server-side, so the data is authoritative — not a
-    filtered sample of the series payload.
-
-    Returns (processed, updated) counts across all levels touched.
+    Resolves the series once, then uses indexed /media lookups (authoritative,
+    server-computed) for seasons and episodes. index1/index2 are None for the
+    series, (season, -1) for a season, (season, episode) for an episode.
     """
     if levels is None:
         levels = _DEFAULT_TV_LEVELS
 
-    print(f"  {show.title}")
-
-    try:
-        series_media = match_show(dtdd, show)
-    except Exception as e:
-        print(f"    ✗ API error: {e}")
-        return 0, 0
-
+    series_media = match_show(dtdd, show)
     if not series_media:
-        print(f"    – not found on DTDD")
-        return 0, 0
-
+        return
     show_id = media_id(series_media)
-    matched_name = series_media.get("item", {}).get("name", "unknown")
-    print(f'    → matched: "{matched_name}" (DTDD id: {show_id})')
 
-    processed = 0
-    updated = 0
-
-    # Series level
     if "series" in levels:
-        processed += 1
-        if apply_warnings(show, series_media, "series", dry_run=dry_run, indent="    "):
-            updated += 1
+        yield (show, f"{show.title} — series", series_media, None, None)
 
-    # Nothing more to do without an id or season/episode levels
     if not show_id or not ({"season", "episode"} & set(levels)):
-        return processed, updated
+        return
 
     for season in show.seasons():
         s_num = season.index
         if s_num is None:
             continue
-
         if "season" in levels:
-            processed += 1
             try:
-                season_media = dtdd.get_media(f"{show_id}?index1={s_num}&index2=-1")
-            except Exception as e:
-                print(f"    ✗ Season {s_num:02d} — API error: {e}")
-                season_media = None
-            if season_media is not None:
-                if apply_warnings(season, season_media, f"Season {s_num:02d}",
-                                  dry_run=dry_run, indent="    "):
-                    updated += 1
-
+                sm = dtdd.get_media(f"{show_id}?index1={s_num}&index2=-1")
+            except Exception:
+                sm = None
+            if sm is not None:
+                yield (season, f"{show.title} — Season {s_num:02d}", sm, s_num, -1)
         if "episode" in levels:
             try:
                 episodes = season.episodes()
@@ -337,19 +435,46 @@ def process_show(dtdd: DTDDClient, show, dry_run: bool = False,
                 e_num = episode.index
                 if e_num is None:
                     continue
-                label = f"S{s_num:02d}E{e_num:02d}"
-                if episode.title:
-                    label += f" - {episode.title}"
-                processed += 1
                 try:
-                    ep_media = dtdd.get_media(f"{show_id}?index1={s_num}&index2={e_num}")
-                except Exception as e:
-                    print(f"      ✗ {label} — API error: {e}")
-                    ep_media = None
-                if ep_media is not None:
-                    if apply_warnings(episode, ep_media, label, dry_run=dry_run, indent="      "):
-                        updated += 1
+                    em = dtdd.get_media(f"{show_id}?index1={s_num}&index2={e_num}")
+                except Exception:
+                    em = None
+                if em is not None:
+                    label = f"{show.title} — S{s_num:02d}E{e_num:02d}"
+                    if episode.title:
+                        label += f" - {episode.title}"
+                    yield (episode, label, em, s_num, e_num)
 
+
+def process_show(dtdd: DTDDClient, show, dry_run: bool = False,
+                 levels: list[str] | None = None) -> tuple[int, int]:
+    """Process a TV show at the configured levels (series / season / episode).
+
+    Returns (processed, updated) counts across all levels touched.
+    """
+    if levels is None:
+        levels = _DEFAULT_TV_LEVELS
+
+    print(f"  {show.title}")
+    processed = 0
+    updated = 0
+    found = False
+    try:
+        for item, label, media, i1, i2 in iter_show_media(dtdd, show, levels):
+            found = True
+            short = label.split(" — ", 1)[-1]
+            is_episode = i1 is not None and i2 is not None and i2 != -1
+            indent = "      " if is_episode else "    "
+            timeline = build_item_timeline(dtdd, media)
+            processed += 1
+            if apply_warnings(item, media, short, dry_run=dry_run, indent=indent, timeline=timeline):
+                updated += 1
+    except Exception as e:
+        print(f"    ✗ API error: {e}")
+        return processed, updated
+
+    if not found:
+        print("    – not found on DTDD")
     return processed, updated
 
 
@@ -414,6 +539,50 @@ def get_libraries(plex: PlexServer, library_names: list[str] | None,
         return [s for s in plex.library.sections() if s.type in type_values]
 
 
+def make_client() -> DTDDClient:
+    """Build a DTDD client from current settings."""
+    return DTDDClient(
+        api_key=settings.get("DTDD_API_KEY"),
+        cache_ttl=settings.get("CACHE_TTL"),
+        api_delay=settings.get("API_DELAY"),
+    )
+
+
+def connect_plex() -> PlexServer:
+    """Connect to Plex using current settings (raises on failure)."""
+    return PlexServer(settings.get("PLEX_URL"), settings.get("PLEX_TOKEN"))
+
+
+def fetch_topics(dtdd: DTDDClient, sample_title: str = "Avengers Endgame") -> list[dict]:
+    """Return every DTDD topic as {name, description, keywords}, sorted by name.
+
+    Pulls them from a popular, heavily-rated title so the list is comprehensive.
+    The description is handy as a tooltip in a topic picker.
+    """
+    results = dtdd.search(sample_title)
+    if not results:
+        return []
+    media = dtdd.get_media(results[0]["id"])
+    by_name: dict[str, dict] = {}
+    for stat in media.get("topicItemStats", []):
+        topic = stat.get("topic", {})
+        name = topic.get("name")
+        if not name or name in by_name:
+            continue
+        by_name[name] = {
+            "name": name,
+            "description": (topic.get("description") or "").strip(),
+            "keywords": (topic.get("keywords") or "").strip(),
+            "category": (topic.get("TopicCategory") or {}).get("name") or "Other",
+        }
+    return [by_name[n] for n in sorted(by_name)]
+
+
+def fetch_topic_catalog(dtdd: DTDDClient, sample_title: str = "Avengers Endgame") -> list[str]:
+    """Return every DTDD topic name (sorted) — names only, for the CLI."""
+    return [t["name"] for t in fetch_topics(dtdd, sample_title)]
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Add DoesTheDogDie.com content warnings to your Plex summaries."
@@ -432,33 +601,25 @@ def main():
                         help="Show all available DTDD topic names (for INCLUDE_TOPICS/EXCLUDE_TOPICS)")
     args = parser.parse_args()
 
-    dry_run = args.dry_run or getattr(config, "DRY_RUN", False)
-    tv_levels = getattr(config, "TV_WARNING_LEVELS", _DEFAULT_TV_LEVELS)
+    dry_run = args.dry_run or settings.get("DRY_RUN")
+    tv_levels = settings.get("TV_WARNING_LEVELS")
+
+    if not settings.get("DTDD_API_KEY"):
+        print("ERROR: No DoesTheDogDie API key set.")
+        print("Set it in settings.json / config.py, the DTDD_API_KEY env var, or the GUI.")
+        sys.exit(1)
 
     # Handle cache clear
     if args.clear_cache:
-        client = DTDDClient(config.DTDD_API_KEY)
-        client.clear_cache()
+        make_client().clear_cache()
         if not (args.clear or args.movie or args.show or args.list_topics):
             return
 
-    # Handle list-topics: fetch a well-known movie to show all available topics
+    # Handle list-topics
     if args.list_topics:
-        dtdd = DTDDClient(
-            api_key=config.DTDD_API_KEY,
-            cache_ttl=getattr(config, "CACHE_TTL", 604800),
-            api_delay=getattr(config, "API_DELAY", 1.0),
-        )
         print("Fetching topic list from DTDD...\n")
-        results = dtdd.search("Avengers Endgame")
-        if results:
-            media = dtdd.get_media(results[0]["id"])
-            stats = media.get("topicItemStats", [])
-            topics = sorted(set(
-                stat.get("topic", {}).get("name", "")
-                for stat in stats
-                if stat.get("topic", {}).get("name")
-            ))
+        topics = fetch_topic_catalog(make_client())
+        if topics:
             print("Available topic names (copy these into INCLUDE_TOPICS or EXCLUDE_TOPICS):\n")
             for topic in topics:
                 print(f'    "{topic}",')
@@ -468,27 +629,23 @@ def main():
         return
 
     # Connect to Plex
-    print(f"Connecting to Plex at {config.PLEX_URL}...")
+    print(f"Connecting to Plex at {settings.get('PLEX_URL')}...")
     try:
-        plex = PlexServer(config.PLEX_URL, config.PLEX_TOKEN)
+        plex = connect_plex()
         print(f"Connected to: {plex.friendlyName}")
     except Exception as e:
         print(f"ERROR: Could not connect to Plex: {e}")
         sys.exit(1)
 
-    library_names = getattr(config, "PLEX_LIBRARIES", None)
-    library_types = getattr(config, "PLEX_LIBRARY_TYPES", None)
+    library_names = settings.get("PLEX_LIBRARIES")
+    library_types = settings.get("PLEX_LIBRARY_TYPES")
 
     # Handle clear mode
     if args.clear:
         clear_warnings(plex, library_names, library_types)
         return
 
-    dtdd = DTDDClient(
-        api_key=config.DTDD_API_KEY,
-        cache_ttl=getattr(config, "CACHE_TTL", 604800),
-        api_delay=getattr(config, "API_DELAY", 1.0),
-    )
+    dtdd = make_client()
 
     if dry_run:
         print("DRY RUN — no changes will be made to Plex\n")
