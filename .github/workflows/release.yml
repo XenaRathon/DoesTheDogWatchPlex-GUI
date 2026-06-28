@@ -42,7 +42,10 @@ jobs:
 
       - name: flet build
         shell: bash
-        run: yes | flet build ${{ matrix.target }} -v
+        env:
+          PYTHONUTF8: "1"            # fix rich's cp1252 crash on Windows
+          PYTHONIOENCODING: "utf-8"
+        run: flet build ${{ matrix.target }} -v
 
       # ---------- package per platform ----------
       - name: Package Windows (.zip with the .exe)
