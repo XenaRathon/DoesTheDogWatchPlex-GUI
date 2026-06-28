@@ -99,10 +99,13 @@ class DTDDApp:
         self.include_set: set[str] = set(settings.get("INCLUDE_TOPICS") or [])
         self.exclude_set: set[str] = set(settings.get("EXCLUDE_TOPICS") or [])
         self.topic_mode = "include"       # which list the topic checkboxes edit
+        self._topic_shown = 0
+        self._topic_ncats = 0
         self.open_tabs: list[dict] = []   # document tabs: Run + review tabs
         self.active_tab = "run"
         self._review_seq = 0              # uniquifies review tab ids
         self.busy = False
+        self.cancel_requested = False     # cooperative cancel flag for running jobs
         self._build()
 
     # -- value collection ----------------------------------------------------
@@ -399,6 +402,8 @@ class DTDDApp:
             def add_show(show):
                 nonlocal count
                 for item, label, media, i1, i2 in engine.iter_show_media(dtdd, show, levels):
+                    if self.cancel_requested:
+                        return
                     if self._add_review_card(state, item, label, media,
                                              engine.build_item_timeline(dtdd, media)):
                         count += 1
@@ -411,20 +416,26 @@ class DTDDApp:
                         media, engine.build_item_timeline(dtdd, media)):
                     count += 1
 
+            stopped = False
             for lib in engine.get_libraries(plex, names, settings.get("PLEX_LIBRARY_TYPES")):
                 items = lib.search(title=target) if target else lib.all()
                 for it in items:
+                    if self.cancel_requested:
+                        stopped = True
+                        break
                     if lib.type == "show":
                         add_show(it)
                     else:
                         add_movie(it)
+                if stopped:
+                    break
 
             if not state["items"]:
                 state["list"].controls = [ft.Text("No items with warnings found for this scope.",
                                                   color=TEXT_DIM, size=12)]
                 self.page.update()
-            self._log(f"Dry run complete: {count} item(s) in this Review tab. "
-                      f"Tick descriptions, then ‘Commit this review → Plex’.")
+            self._log(f"Dry run {'stopped' if stopped else 'complete'}: {count} item(s) in this "
+                      f"Review tab. Tick descriptions, then ‘Commit this review → Plex’.")
         self._run_bg(task, "Dry run → building review…")
 
     def _write_now(self):
@@ -441,17 +452,23 @@ class DTDDApp:
             dtdd = engine.make_client()
             levels = settings.get("TV_WARNING_LEVELS")
             names = settings.get("PLEX_LIBRARIES")
+            stopped = False
             with self._capture():
                 for lib in engine.get_libraries(plex, names, settings.get("PLEX_LIBRARY_TYPES")):
                     items = lib.search(title=target) if target else lib.all()
                     if not target:
                         print(f"\nProcessing: {lib.title} ({len(items)} items)")
                     for it in items:
+                        if self.cancel_requested:
+                            stopped = True
+                            break
                         if lib.type == "show":
                             engine.process_show(dtdd, it, dry_run=False, levels=levels)
                         else:
                             engine.process_movie(dtdd, it, dry_run=False)
-            self._log("Write now complete.")
+                    if stopped:
+                        break
+            self._log("Write now stopped." if stopped else "Write now complete.")
         self._run_bg(task, "Write now → writing to Plex…")
 
     def _add_review_card(self, state, item, label, media, timeline) -> bool:
@@ -548,8 +565,12 @@ class DTDDApp:
 
         def task():
             n = 0
+            stopped = False
             with self._capture():
                 for rec in state["items"]:
+                    if self.cancel_requested:
+                        stopped = True
+                        break
                     try:
                         original = getattr(rec["item"], "summary", "") or ""
                         new_summary = (engine.strip_warnings(original) + engine.get_separator()
@@ -559,7 +580,8 @@ class DTDDApp:
                         n += 1
                     except Exception as ex:
                         print(f"  ✗ {rec['label']}: {ex}")
-            self._log(f"Committed {n} item(s) from this review tab to Plex.")
+            self._log(f"Committed {n} item(s) from this review tab to Plex"
+                      f"{' (stopped early)' if stopped else ''}.")
         self._run_bg(task, "Commit → writing to Plex…")
 
     def _generic_tab(self, group, subtitle):
@@ -577,6 +599,16 @@ class DTDDApp:
         self.topic_mode = e.control.value or "include"
         self._render_topics()
 
+    def _cat_title(self, cat, names, active):
+        icon = engine.CATEGORY_ICONS.get(cat, engine.FALLBACK_CATEGORY_ICON)
+        picked = sum(1 for n in names if n in active)
+        return f"{icon}  {cat}  ({picked}/{len(names)})" if picked else f"{icon}  {cat}  ({len(names)})"
+
+    def _topic_count_text(self):
+        return (f"{len(self._active_set())} selected · {self._topic_shown} of "
+                f"{len(self.topic_catalog)} topics in {self._topic_ncats} categories "
+                f"({self.topic_mode})")
+
     def _render_topics(self):
         q = (self.topic_search.value or "").strip().lower()
         active = self._active_set()
@@ -589,21 +621,22 @@ class DTDDApp:
                 continue
             shown += 1
             by_cat.setdefault(self.topic_cat.get(name, "Other"), []).append(name)
+        self._topic_shown = shown
+        self._topic_ncats = len(by_cat)
 
         sections = []
         for cat in sorted(by_cat):
             names = by_cat[cat]
+            title_txt = ft.Text(self._cat_title(cat, names, active), color=NEON_CYAN, size=13)
             boxes = [ft.Checkbox(
                 label=n, value=(n in active), active_color=NEON_PINK, check_color=BG,
                 label_style=ft.TextStyle(color=TEXT, size=12),
                 tooltip=self.topic_desc.get(n) or None,
-                on_change=lambda e, n=n: self._toggle_topic(n, e.control.value),
+                on_change=lambda e, n=n, tt=title_txt, c=cat, nm=names:
+                    self._toggle_topic(n, e.control.value, tt, c, nm),
             ) for n in names]
-            picked = sum(1 for n in names if n in active)
-            icon = engine.CATEGORY_ICONS.get(cat, engine.FALLBACK_CATEGORY_ICON)
-            title = f"{icon}  {cat}  ({picked}/{len(names)})" if picked else f"{icon}  {cat}  ({len(names)})"
             sections.append(ft.ExpansionTile(
-                title=ft.Text(title, color=NEON_CYAN, size=13),
+                title=title_txt,
                 controls=[ft.Container(content=ft.Column(boxes, spacing=0), padding=ft.Padding(left=16, top=0, right=0, bottom=4))],
                 text_color=NEON_CYAN, collapsed_text_color=TEXT,
                 icon_color=NEON_PINK, collapsed_icon_color=TEXT_DIM,
@@ -615,18 +648,20 @@ class DTDDApp:
         if not self.topic_catalog:
             self.topic_count.value = "No topics loaded yet — click ‘Load topics from DTDD’."
         else:
-            self.topic_count.value = (f"{len(active)} selected · {shown} of "
-                                      f"{len(self.topic_catalog)} topics in {len(by_cat)} categories "
-                                      f"({self.topic_mode})")
+            self.topic_count.value = self._topic_count_text()
         self.page.update()
 
-    def _toggle_topic(self, name, on):
+    def _toggle_topic(self, name, on, title_txt, cat, names):
+        # Update only this category's count + the totals — no full re-render, so the
+        # category stays open and the scroll position holds while you tick boxes.
         s = self._active_set()
         if on:
             s.add(name)
         else:
             s.discard(name)
-        self._render_topics()
+        title_txt.value = self._cat_title(cat, names, s)
+        self.topic_count.value = self._topic_count_text()
+        self.page.update()
 
     def _load_topics(self):
         def task():
@@ -742,10 +777,12 @@ class DTDDApp:
 
     def _run_bg(self, task, status):
         if self.busy:
-            self._log("· busy — wait for the current job to finish.")
+            self._log("· busy — wait for the current job to finish, or click Stop.")
             return
         self.busy = True
+        self.cancel_requested = False
         self.spinner.visible = True
+        self.stop_btn.visible = True
         self.status.value = status
         self.page.update()
 
@@ -756,10 +793,19 @@ class DTDDApp:
                 self._log(f"✗ Error: {ex}")
             finally:
                 self.busy = False
+                self.cancel_requested = False
                 self.spinner.visible = False
+                self.stop_btn.visible = False
                 self.status.value = "Ready"
                 self.page.update()
         self.page.run_thread(runner)
+
+    def _stop(self, e=None):
+        if self.busy:
+            self.cancel_requested = True
+            self.status.value = "Stopping…"
+            self._log("⛔ Stop requested — halting after the current item.")
+            self.page.update()
 
     def _log(self, line):
         self.log.controls.append(ft.Text(line, color=TEXT, size=12, font_family=MONO, selectable=True))
@@ -800,6 +846,10 @@ class DTDDApp:
         )
         self.spinner = ft.ProgressRing(width=18, height=18, color=NEON_CYAN, visible=False)
         self.status = ft.Text("Ready", color=TEXT_DIM, size=12)
+        self.stop_btn = ft.Button(content="Stop", icon=ft.Icons.STOP_CIRCLE, bgcolor="#4a0a1a",
+                                  color=NEON_PINK, visible=False,
+                                  tooltip="Cancel the running job (stops after the current item)",
+                                  on_click=self._stop)
         buttons = ft.Row([
             ft.Button(content="Save", icon=ft.Icons.SAVE, bgcolor=PANEL, color=TEXT,
                       tooltip="Save your settings to settings.json", on_click=self._save),
@@ -819,6 +869,7 @@ class DTDDApp:
             ft.Container(width=12),
             ft.Button(content="Clear", icon=ft.Icons.DELETE_SWEEP, bgcolor=PANEL, color=NEON_PINK,
                       tooltip="Remove all DoesTheDogDie warnings from Plex", on_click=self._clear),
+            self.stop_btn,
             self.spinner, self.status,
         ], wrap=True, spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
         legend = ft.Text(
