@@ -1,12 +1,12 @@
 # DoesTheDogWatchPlex
 
-Add content warnings from [DoesTheDogDie.com](https://www.doesthedogdie.com) to your Plex movie summaries — so anyone browsing your library can see trigger warnings without leaving the Plex interface.
+Add content warnings from [DoesTheDogDie.com](https://www.doesthedogdie.com) to your Plex **movie and TV** summaries — so anyone browsing your library can see trigger warnings without leaving the Plex interface.
 
-Rebuilt from [valknight/DoesTheDogWatchPlex](https://github.com/valknight/DoesTheDogWatchPlex) (2018) for modern Plex and the current DTDD API.
+Rebuilt from [valknight/DoesTheDogWatchPlex](https://github.com/valknight/DoesTheDogWatchPlex) (2018) for modern Plex and the current DTDD API, then extended with TV show support (series / season / episode levels).
 
 ## What It Does
 
-For each movie in your Plex library, the script:
+For each **movie** in your Plex library, the script:
 
 1. Matches it to DoesTheDogDie.com (by IMDB ID first, then title/year)
 2. Fetches community-voted content warnings (animal death, sexual assault, etc.)
@@ -23,6 +23,22 @@ Original movie summary here...
 ```
 
 Warnings are filtered by vote count and confidence ratio, so you only see things the community is reasonably sure about.
+
+## TV Shows
+
+TV libraries get warnings at up to three levels, each written to the matching Plex summary (configurable via `TV_WARNING_LEVELS`):
+
+| Level | Written to | DTDD lookup |
+|---|---|---|
+| `series` | the show summary | whole-series community votes |
+| `season` | each season summary | `index1=<season>, index2=-1` |
+| `episode` | each episode summary | `index1=<season>, index2=<episode>` |
+
+The show is matched **once** (by IMDB id, then title+year against `TV Show` results) to resolve its DTDD id; season and episode warnings then come from DTDD's own per-index aggregates — authoritative data computed server-side, not a filtered sample of the series page.
+
+> **A note on episode/season accuracy.** DTDD's per-index data is community-sourced and uneven. Most topics are correctly scoped, but a chunk of **series-wide** votes get attributed to the **first season and first episode** (DTDD's default bucket for votes cast without a specific index). So *Season 1* and *S1E1* of a show tend to over-report — they inherit some warnings that really apply to the whole series — while later seasons/episodes are clean. For example, Game of Thrones Season 1 returns 13 topics while Seasons 2–6 return ~1 each. This is a DTDD data quirk, not a matching bug, and it can't be cleanly auto-stripped without risking genuine warnings (e.g. a pet that really does die in episode 1). The series level is the most complete; treat S1/S1E1 as approximate. See the [Roadmap](#roadmap) for planned mitigations.
+
+Episode level makes one API call per episode, so it's the slowest option across a large library — start with `series` + `season` and add `episode` once you're happy with the output.
 
 ## Setup
 
@@ -100,7 +116,10 @@ python plex_warnings.py
 # Process a single movie
 python plex_warnings.py --movie "Midsommar"
 
-# Remove all content warnings from your library
+# Process a single TV show (series/season/episode per TV_WARNING_LEVELS)
+python plex_warnings.py --show "Game of Thrones"
+
+# Remove all content warnings from your library (movies + all TV levels)
 python plex_warnings.py --clear
 
 # Clear the local API cache (forces fresh DTDD lookups)
@@ -130,7 +149,9 @@ All settings are in `config.py`. Key options:
 
 | Setting | Env Var | Default | Description |
 |---|---|---|---|
-| `PLEX_LIBRARIES` | `PLEX_LIBRARIES` | `["Movies"]` | Which libraries to process. `None`/empty = all movie libraries |
+| `PLEX_LIBRARY_TYPES` | `PLEX_LIBRARY_TYPES` | `["movies"]` | Kinds of library to process: `"movies"`, `"tv_shows"` |
+| `PLEX_LIBRARIES` | `PLEX_LIBRARIES` | `["Movies"]` | Which named libraries to process (filtered by type). `None` = all matching `PLEX_LIBRARY_TYPES` |
+| `TV_WARNING_LEVELS` | `TV_WARNING_LEVELS` | `["series","season","episode"]` | For TV: which levels to write. Drop `"episode"` for far fewer API calls |
 | `MIN_YES_VOTES` | `MIN_YES_VOTES` | `5` | Minimum "yes" votes to include a warning |
 | `MIN_YES_RATIO` | `MIN_YES_RATIO` | `0.7` | Minimum ratio of yes/(yes+no) to flag a warning |
 | `SHOW_SAFE_TOPICS` | `SHOW_SAFE_TOPICS` | `False` | Include the ✅ "safe" list (e.g., "no dogs die") |
@@ -192,11 +213,25 @@ If both are set, `INCLUDE_TOPICS` takes priority and `EXCLUDE_TOPICS` is ignored
 
 ## How It Works
 
-- **Matching:** Tries IMDB ID first (via Plex's GUID metadata), then falls back to title+year search against the DTDD API.
+- **Matching:** Tries IMDB ID first (via Plex's GUID metadata), then falls back to title+year search against the DTDD API. TV shows match once at the series level to resolve a DTDD id, then use indexed lookups for seasons/episodes.
 - **Caching:** API responses are cached locally in `.cache/` as JSON files to avoid hammering DTDD on re-runs.
-- **Idempotent:** Safe to re-run. Existing warnings are stripped and replaced with fresh data each time.
+- **Idempotent:** Safe to re-run. Existing warnings are stripped and replaced with fresh data each time, at every level (movie / series / season / episode).
 - **Reversible:** `--clear` removes all DTDD-added content from summaries, restoring originals.
+
+## Roadmap
+
+- **Web UI for settings & topic selection** — a simple interface to edit `config.py` (thresholds, libraries, language) and tick which topics to include/exclude, instead of hand-editing Python. Picking from the ~200 DTDD topics is the main pain point today.
+- **Smarter episode/season attribution** — mitigate DTDD's tendency to dump series-wide votes onto Season 1 / S1E1 (see the accuracy note above), e.g. by cross-referencing later episodes to spot topics that are uniform across an entire show.
+- **Per-library configuration** — different thresholds or topic filters per Plex library.
+
+## Credits
+
+- Original concept: [valknight/DoesTheDogWatchPlex](https://github.com/valknight/DoesTheDogWatchPlex) (2018).
+- TV show support drew on community work toward the same goal, including [greghesp's `feature/tv-show-support`](https://github.com/greghesp/DoesTheDogWatchPlex/tree/feature/tv-show-support) branch.
+- Content warning data: the [DoesTheDogDie.com](https://www.doesthedogdie.com) community.
+
+> Built with the help of [Claude Code](https://claude.com/claude-code) (Anthropic Claude Opus 4.8).
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE). This is a derivative work; the original project is MIT-licensed and that notice is retained.

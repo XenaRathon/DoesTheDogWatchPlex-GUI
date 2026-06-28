@@ -10,9 +10,28 @@ PLEX_URL = "http://localhost:32400"
 # Or see: https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/
 PLEX_TOKEN = "your-plex-token-here"
 
-# Library names to process (case-sensitive, as they appear in Plex)
-# Set to None to process ALL movie libraries
+# Which kinds of library to process. Any of: "movies", "tv_shows".
+# Movies get one warning block on the movie summary; TV shows get warnings at the
+# levels listed in TV_WARNING_LEVELS below.
+PLEX_LIBRARY_TYPES = ["movies"]
+
+# Library names to process (case-sensitive, as they appear in Plex).
+# Only libraries whose type is in PLEX_LIBRARY_TYPES are touched.
+# Set to None to process ALL libraries matching PLEX_LIBRARY_TYPES.
 PLEX_LIBRARIES = ["Movies"]
+
+# For TV shows, which levels to write warnings to. Any of:
+#   "series"  → the show summary        (whole-series community votes)
+#   "season"  → each season summary     (DTDD index1=<season>, index2=-1)
+#   "episode" → each episode summary     (DTDD index1=<season>, index2=<episode>)
+# Fewer levels = far fewer API calls. Episode level is the slowest (one call each).
+#
+# NOTE on episode accuracy: DTDD's per-episode data is community-sourced and
+# imperfect. A few high-profile topics (animal deaths especially) have their
+# series-wide votes attributed to early episodes, so episode 1 may show a couple
+# of warnings that really apply to the series as a whole. Most episode warnings
+# are accurate; this is a known DTDD data limitation, not a matching bug.
+TV_WARNING_LEVELS = ["series", "season", "episode"]
 
 # --- DoesTheDogDie Settings ---
 # Get your API key: sign up at doesthedogdie.com, then visit /profile
