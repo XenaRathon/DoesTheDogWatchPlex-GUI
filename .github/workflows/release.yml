@@ -31,7 +31,7 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: 3.41.7   # the exact version flet 0.85.x requires
 
       - name: Linux build deps
         if: matrix.target == 'linux'
@@ -41,7 +41,8 @@ jobs:
         run: pip install "flet>=0.85,<0.90"
 
       - name: flet build
-        run: flet build ${{ matrix.target }} -v
+        shell: bash
+        run: yes | flet build ${{ matrix.target }} -v
 
       # ---------- package per platform ----------
       - name: Package Windows (.zip with the .exe)
