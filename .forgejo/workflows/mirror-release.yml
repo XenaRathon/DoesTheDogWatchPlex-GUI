@@ -20,7 +20,7 @@ jobs:
           command -v jq >/dev/null || (apt-get update && apt-get install -y jq curl)
           TAG="${GITHUB_REF_NAME}"
           GH="https://api.github.com/repos/XenaRathon/DoesTheDogWatchPlex-GUI"
-          FJ="http://192.168.1.209:3300/api/v1/repos/xenarathon/DoesTheDogWatchPlex"
+          FJ="http://192.168.1.209:3300/api/v1/repos/xenarathon/DoesTheDogWatchPlex-GUI"
 
           echo "Waiting for GitHub release $TAG to have 3 assets…"
           for i in $(seq 1 40); do
