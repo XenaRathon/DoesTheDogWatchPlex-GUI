@@ -16,7 +16,7 @@ jobs:
 
       - name: Build & push GUI image
         run: |
-          IMG=${{ vars.REGISTRY_HOST }}/${{ github.repository_owner }}/doesthedogwatchplex
+          IMG=${{ vars.REGISTRY_HOST }}/${{ github.repository_owner }}/doesthedogwatchplex-gui
           docker build -f Dockerfile.gui -t "$IMG:latest" -t "$IMG:${{ github.sha }}" .
           docker push "$IMG:latest"
           docker push "$IMG:${{ github.sha }}"
