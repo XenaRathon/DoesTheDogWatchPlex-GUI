@@ -1,0 +1,52 @@
+name: mirror-release-to-forgejo
+
+# Runs ONLY on Forgejo (GitHub ignores .forgejo/). On a version tag, it waits for
+# the GitHub Actions release build to finish, then copies the .exe/.dmg/.AppImage
+# onto the matching Forgejo release. The Forgejo runner reaches both GitHub (public)
+# and Forgejo (LAN), so no inbound-through-Cloudflare is needed.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for the GitHub release and mirror its assets
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          set -e
+          command -v jq >/dev/null || (apt-get update && apt-get install -y jq curl)
+          TAG="${GITHUB_REF_NAME}"
+          GH="https://api.github.com/repos/XenaRathon/DoesTheDogWatchPlex-GUI"
+          FJ="http://192.168.1.209:3300/api/v1/repos/xenarathon/DoesTheDogWatchPlex"
+
+          echo "Waiting for GitHub release $TAG to have 3 assets…"
+          for i in $(seq 1 40); do
+            REL=$(curl -fsSL "$GH/releases/tags/$TAG" 2>/dev/null || echo '{}')
+            CNT=$(echo "$REL" | jq '[.assets[]?] | length')
+            echo "  assets so far: $CNT"
+            [ "$CNT" -ge 3 ] && break
+            sleep 30
+          done
+
+          mkdir -p dl
+          echo "$REL" | jq -r '.assets[] | "\(.browser_download_url)\t\(.name)"' | while IFS=$'\t' read -r url name; do
+            echo "  downloading $name"; curl -fsSL "$url" -o "dl/$name"
+          done
+
+          # ensure the Forgejo release exists, then get its id
+          curl -s -X POST "$FJ/releases" -H "Authorization: token $FORGEJO_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"Standalone installers (mirrored from GitHub Actions).\"}" >/dev/null || true
+          RID=$(curl -fsSL "$FJ/releases/tags/$TAG" -H "Authorization: token $FORGEJO_TOKEN" | jq '.id')
+          echo "Forgejo release id: $RID"
+
+          for f in dl/*; do
+            n=$(basename "$f")
+            echo "  uploading $n"
+            curl -s -X POST "$FJ/releases/$RID/assets?name=$n" \
+              -H "Authorization: token $FORGEJO_TOKEN" -F "attachment=@$f" >/dev/null
+          done
+          echo "Mirror complete."
