@@ -5,9 +5,15 @@ Uses Google Translate via deep-translator with local file caching.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
-TRANSLATION_CACHE = Path(__file__).parent / ".cache" / "translations.json"
+if os.environ.get("DTDD_DATA_DIR"):
+    CACHE_DIR = Path(os.environ["DTDD_DATA_DIR"]) / ".cache"
+else:
+    print("Warning: DTDD_DATA_DIR not set, falling back to code directory for translation cache.")
+    CACHE_DIR = Path(__file__).parent / ".cache"
+TRANSLATION_CACHE = CACHE_DIR / "translations.json"
 
 
 def _load_cache() -> dict:

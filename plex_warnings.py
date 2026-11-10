@@ -500,15 +500,22 @@ def clear_warnings(plex: PlexServer, library_names: list[str] | None,
         print(f"\nClearing warnings from: {lib.title}")
         if lib.type == "show":
             for show in lib.all():
-                clear_item(show, show.title)
-                for season in show.seasons():
-                    clear_item(season, f"{show.title} — Season {season.index}")
-                    try:
-                        episodes = season.episodes()
-                    except Exception:
-                        episodes = []
-                    for episode in episodes:
-                        clear_item(episode, f"{show.title} S{season.index:02d}E{episode.index:02d}")
+                try:
+                    clear_item(show, show.title)
+                    for season in show.seasons():
+                        if season.index is None:
+                            continue
+                        clear_item(season, f"{show.title} — Season {season.index}")
+                        try:
+                            episodes = season.episodes()
+                        except Exception:
+                            episodes = []
+                        for episode in episodes:
+                            if episode.index is None:
+                                continue
+                            clear_item(episode, f"{show.title} S{season.index:02d}E{episode.index:02d}")
+                except Exception as e:
+                    print(f"  ✗ {show.title} — failed to clear: {e}")
         else:
             for movie in lib.all():
                 clear_item(movie, movie.title)
