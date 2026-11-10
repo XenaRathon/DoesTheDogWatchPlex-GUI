@@ -3,8 +3,10 @@ DoesTheDogDie.com API client with local JSON file caching.
 """
 from __future__ import annotations
 
+import hashlib
 import html as _html
 import json
+import logging
 import os
 import re
 import time
@@ -15,6 +17,13 @@ import requests
 DTDD_BASE = "https://www.doesthedogdie.com"
 # Cache lives under DTDD_DATA_DIR when set (mounted volume in Docker), else alongside the code.
 CACHE_DIR = Path(os.environ.get("DTDD_DATA_DIR") or Path(__file__).parent) / ".cache"
+
+
+def _make_safe_key(prefix: str, identifier: str) -> str:
+    """Generate a filesystem-safe cache key with a slug and hash."""
+    slug = re.sub(r'[^a-zA-Z0-9_-]', '_', identifier)[:50]
+    hash_suffix = hashlib.md5(identifier.encode('utf-8')).hexdigest()[:8]
+    return f"{prefix}_{slug}_{hash_suffix}"
 
 
 def parse_timeline_html(html_text: str) -> list[dict]:
@@ -76,8 +85,8 @@ class DTDDClient:
             data = json.loads(path.read_text())
             if time.time() - data.get("_cached_at", 0) < self.cache_ttl:
                 return data.get("_payload")
-        except (json.JSONDecodeError, KeyError):
-            pass
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError):
+            logging.getLogger(__name__).warning("Failed to read cache for %s, treating as miss", key)
         return None
 
     def _set_cache(self, key: str, payload: dict):
@@ -90,13 +99,13 @@ class DTDDClient:
 
     def search(self, query: str) -> list[dict]:
         """Search DTDD by title string. Returns list of matching items."""
-        cache_key = f"search_{query.lower().replace(' ', '_')}"
+        cache_key = _make_safe_key('search', query.lower())
         cached = self._get_cache(cache_key)
         if cached is not None:
             return cached
 
         self._rate_limit()
-        resp = self.session.get(f"{DTDD_BASE}/dddsearch", params={"q": query})
+        resp = self.session.get(f"{DTDD_BASE}/dddsearch", params={"q": query}, timeout=30)
         resp.raise_for_status()
         items = resp.json().get("items", [])
         self._set_cache(cache_key, items)
@@ -104,13 +113,13 @@ class DTDDClient:
 
     def search_by_imdb(self, imdb_id: str) -> list[dict]:
         """Search DTDD by IMDB ID (e.g., 'tt1234567'). Returns list of matching items."""
-        cache_key = f"imdb_{imdb_id}"
+        cache_key = _make_safe_key('imdb', imdb_id)
         cached = self._get_cache(cache_key)
         if cached is not None:
             return cached
 
         self._rate_limit()
-        resp = self.session.get(f"{DTDD_BASE}/dddsearch", params={"imdb": imdb_id})
+        resp = self.session.get(f"{DTDD_BASE}/dddsearch", params={"imdb": imdb_id}, timeout=30)
         resp.raise_for_status()
         items = resp.json().get("items", [])
         self._set_cache(cache_key, items)
@@ -118,13 +127,13 @@ class DTDDClient:
 
     def get_media(self, item_id: int) -> dict:
         """Get full trigger/warning data for a DTDD media item."""
-        cache_key = f"media_{item_id}"
+        cache_key = _make_safe_key('media', str(item_id))
         cached = self._get_cache(cache_key)
         if cached is not None:
             return cached
 
         self._rate_limit()
-        resp = self.session.get(f"{DTDD_BASE}/media/{item_id}")
+        resp = self.session.get(f"{DTDD_BASE}/media/{item_id}", timeout=30)
         resp.raise_for_status()
         data = resp.json()
         self._set_cache(cache_key, data)
@@ -136,7 +145,7 @@ class DTDDClient:
         Returns a list of {topic, start, end, description}. Empty if the title has
         no timecodes or the account isn't a subscriber.
         """
-        cache_key = f"timeline_{media_id}"
+        cache_key = _make_safe_key('timeline', str(media_id))
         cached = self._get_cache(cache_key)
         if cached is not None:
             return cached
