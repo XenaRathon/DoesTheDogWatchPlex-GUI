@@ -545,6 +545,7 @@ def make_client() -> DTDDClient:
         api_key=settings.get("DTDD_API_KEY"),
         cache_ttl=settings.get("CACHE_TTL"),
         api_delay=settings.get("API_DELAY"),
+        retries=settings.get("DTDD_RETRIES"),
     )
 
 

@@ -6,11 +6,16 @@ from __future__ import annotations
 import html as _html
 import json
 import os
+import logging
 import re
 import time
 from pathlib import Path
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
+
+logger = logging.getLogger(__name__)
 
 DTDD_BASE = "https://www.doesthedogdie.com"
 # Cache lives under DTDD_DATA_DIR when set (mounted volume in Docker), else alongside the code.
@@ -48,9 +53,28 @@ def parse_timeline_html(html_text: str) -> list[dict]:
     return entries
 
 
+class LoggingRetry(Retry):
+    def increment(self, *args, **kwargs):
+        logger.warning(f"Retrying DTDD API request... ({self.history})")
+        return super().increment(*args, **kwargs)
+
 class DTDDClient:
-    def __init__(self, api_key: str, cache_ttl: int = 604800, api_delay: float = 1.0):
+    def __init__(self, api_key: str, cache_ttl: int = 604800, api_delay: float = 1.0, retries: int | None = None):
+        if retries is None:
+            logger.info("Retries not specified; falling back to default (3).")
+            retries = 3
         self.session = requests.Session()
+
+        retry_strategy = LoggingRetry(
+            total=retries,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"],
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
+
         self.session.headers.update({
             "Accept": "application/json",
             "X-API-KEY": api_key,
